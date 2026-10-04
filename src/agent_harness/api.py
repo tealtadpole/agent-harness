@@ -9,9 +9,11 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from urllib.parse import urlsplit
+
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from pydantic import BaseModel, Field
@@ -91,6 +93,16 @@ def create_app(cfg: Config, providers_factory: ProvidersFactory = default_provid
 
     app = FastAPI(title="Agent Harness", lifespan=lifespan)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(cfg.server.allowed_hosts))
+
+    @app.middleware("http")
+    async def same_origin_only(request: Request, call_next):
+        # Browsers send Origin on cross-site requests; refuse any that come from another site,
+        # so a web page you visit can't use this local API (and your keys) on your behalf.
+        origin = request.headers.get("origin")
+        if origin and request.url.path.startswith("/api/") \
+                and urlsplit(origin).hostname not in cfg.server.allowed_hosts:
+            return JSONResponse({"detail": "Cross-origin request refused"}, status_code=403)
+        return await call_next(request)
 
     def state() -> AppState:
         return app.state.harness

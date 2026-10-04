@@ -142,3 +142,19 @@ def test_foreign_host_header_is_rejected(harness, run_app):
         assert r.status_code == 400
 
     run_app(app, body)
+
+
+def test_cross_origin_requests_are_refused(harness, run_app):
+    app, _, _ = harness([AIMessage("x")])
+
+    async def body(c):
+        evil = await c.http.post("/api/sessions", json={"provider": "claude"},
+                                 headers={"Origin": "https://evil.example"})
+        assert evil.status_code == 403
+        own = await c.http.post("/api/sessions", json={"provider": "claude"},
+                                headers={"Origin": "http://127.0.0.1:8000"})
+        assert own.status_code == 201
+        dev = await c.http.get("/api/sessions", headers={"Origin": "http://localhost:5173"})
+        assert dev.status_code == 200
+
+    run_app(app, body)

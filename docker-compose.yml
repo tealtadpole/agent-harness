@@ -7,7 +7,7 @@ services:
     environment:
       POSTGRES_DB: harness
       POSTGRES_USER: harness
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-harness}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env (copy .env.example)}
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"   # localhost only
     volumes:

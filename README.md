@@ -158,13 +158,15 @@ keeps working.
 - **No login.** Anyone who can reach the server can use your API key, your Copilot quota and
   your MCP tools. It listens on `127.0.0.1` only by default; keep it that way, or put it behind
   an authenticating proxy.
-- **DNS-rebinding protection:** requests whose `Host` header isn't in `server.allowed_hosts`
-  are rejected, so a malicious web page can't drive your local agent through the browser.
+- **Browser-attack protection:** requests whose `Host` header (DNS rebinding) or `Origin`
+  header (cross-site requests) isn't in `server.allowed_hosts` are rejected, so a malicious
+  web page can't drive your local agent through your browser.
 - **Prompt injection:** tool results (e.g. wiki pages) can contain instructions. The system
   prompt tells the model to treat them as data, the tool allow-lists keep the agent to read-only
   tools, and Copilot has no shell or file access here.
 - **Secrets** come only from environment variables. `config.toml` and `.env` are gitignored.
-- Docker's Postgres port is bound to `127.0.0.1`. Change the default password in `.env`.
+- Docker's Postgres port is bound to `127.0.0.1`, and Compose refuses to start until
+  `POSTGRES_PASSWORD` is set in `.env`.
 
 ## Limitations
 
