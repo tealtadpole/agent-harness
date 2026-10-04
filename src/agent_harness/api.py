@@ -23,6 +23,7 @@ from .db import Database, make_pool
 from .mcp_tools import McpTools
 from .providers.claude import ClaudeProvider
 from .providers.copilot import CopilotProvider, CopilotRuntime
+from .providers.llama import LlamaProvider
 from .runner import TurnBusy, TurnRunner
 
 log = logging.getLogger(__name__)
@@ -63,6 +64,8 @@ def default_providers(cfg: Config, mcp: McpTools, checkpointer: AsyncPostgresSav
         runtime = CopilotRuntime(cfg.copilot, cfg.agent, cfg.mcp_servers, mcp.tool_names,
                                  workdir=Path.home() / ".cache" / "agent-harness" / "copilot-workdir")
         providers["copilot"] = CopilotProvider(cfg.copilot, runtime, checkpointer)
+    if cfg.llama.enabled:
+        providers["llama"] = LlamaProvider(cfg.llama, cfg.agent, mcp.tools, checkpointer)
     return providers
 
 

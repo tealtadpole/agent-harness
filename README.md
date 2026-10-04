@@ -1,13 +1,16 @@
 # agent-harness
 
 A small **agent harness** built on **LangChain + LangGraph** with a **React web UI** and
-**PostgreSQL** chat history. It chats through two backends:
+**PostgreSQL** chat history. It chats through three backends:
 
 - **Claude** via the Anthropic API: a LangChain tool-calling agent compiled as a LangGraph graph.
 - **GitHub Copilot** via the official [Copilot SDK](https://github.blog/changelog/2026-04-02-copilot-sdk-in-public-preview/)
   (public preview): Copilot's own agent, wrapped as a LangGraph node.
+- **A local LLM** via [Ollama](https://ollama.com): same LangChain tool-calling agent as Claude,
+  just pointed at `ChatOllama` instead of `ChatAnthropic`. No API key, no usage billed; quality
+  depends on the model you pull.
 
-Both get tools from **MCP servers**, for example the Confluence RAG from
+All three get tools from **MCP servers**, for example the Confluence RAG from
 [local-confluence-RAG](https://github.com/tealtadpole/local-confluence-RAG).
 
 ```
@@ -18,7 +21,8 @@ Both get tools from **MCP servers**, for example the Confluence RAG from
  └──────────────────────────┘              │        ▼                                     │
                                            │  LangGraph graph per provider                │
                                            │   ├─ claude:  create_agent(ChatAnthropic) ───┼──► Anthropic API
-                                           │   └─ copilot: node → Copilot SDK session ────┼──► GitHub Copilot
+                                           │   ├─ copilot: node → Copilot SDK session ────┼──► GitHub Copilot
+                                           │   └─ llama:   create_agent(ChatOllama) ──────┼──► local Ollama server
                                            │        │ tools                               │
                                            │        ▼                                     │
                                            │  MCP servers (stdio) e.g. confluence-rag     │
@@ -38,6 +42,7 @@ Both get tools from **MCP servers**, for example the Confluence RAG from
 | **PostgreSQL** | 14+. The included `docker-compose.yml` runs PostgreSQL 17, so you need Docker with Compose. Your user must be able to run `docker` (e.g. be in the `docker` group) or use `sudo docker compose`. Any existing Postgres works too: set `database.url`. |
 | **Claude** | An Anthropic API key from [console.anthropic.com](https://console.anthropic.com) in `ANTHROPIC_API_KEY`. Usage is billed per token. |
 | **Copilot** (optional) | A GitHub account **with a Copilot plan that allows SDK use**. Each prompt uses your Copilot premium-request quota. On first use the SDK downloads the Copilot runtime (~135 MB) into `~/.cache/github-copilot-sdk`. |
+| **Local LLM** (optional) | [Ollama](https://ollama.com) installed and running (`ollama serve`), with at least one model pulled (`ollama pull llama3.2:3b`). |
 | **MCP tools** (optional) | e.g. [local-confluence-RAG](https://github.com/tealtadpole/local-confluence-RAG) installed and synced. |
 
 ## Installation
@@ -73,6 +78,7 @@ Database: connected
 MCP ok  confluence: search_confluence, get_confluence_page
 ok  Claude (Anthropic API): ready models: claude-opus-5-5, claude-sonnet-5-5, claude-haiku-4-5
 --  GitHub Copilot: Not signed in to GitHub. Run `gh auth login` (GitHub CLI) or set $COPILOT_GITHUB_TOKEN.
+ok  Local LLM (Ollama): ready models: llama3.2:3b
 ```
 
 The tables are created automatically on first start.
@@ -127,6 +133,20 @@ the account is signed in but its Copilot plan doesn't include this kind of acces
 > [retired on 2026-07-30](https://github.blog/changelog/2026-07-01-github-models-is-being-fully-retired-on-july-30-2026/),
 > so the Copilot SDK is the official way to use Copilot from your own app. Unofficial
 > "Copilot API proxies" are deliberately not supported.
+
+### Local LLM (Ollama)
+
+A standard LangChain agent (`langchain.agents.create_agent`), identical in shape to the Claude
+provider, but with `ChatOllama` talking to a local [Ollama](https://ollama.com) server instead of
+the Anthropic API. Settings in `[llama]`:
+
+- `base_url`: where Ollama is listening (default `http://127.0.0.1:11434`).
+- `models` / `default_model`: model tags you've already pulled, e.g. `ollama pull llama3.2:3b`.
+- `num_ctx`: context window override; `0` leaves Ollama's per-model default.
+
+No API key and nothing billed. `check` calls Ollama's `/api/tags` endpoint to confirm the server
+is reachable and the configured models are actually pulled; if not, it tells you which
+`ollama pull` to run.
 
 ## MCP tools
 
@@ -193,6 +213,7 @@ src/agent_harness/
   mcp_tools.py         long-lived MCP server sessions → LangChain tools
   providers/claude.py  ChatAnthropic + create_agent
   providers/copilot.py Copilot SDK runtime, lockdown, LangGraph node
+  providers/llama.py   ChatOllama + create_agent (local LLM via Ollama)
   runner.py            one chat turn: stream events, save history (background task)
   api.py               FastAPI routes, SSE, static UI
   cli.py               serve / check

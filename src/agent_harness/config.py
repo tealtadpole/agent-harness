@@ -70,6 +70,15 @@ class CopilotConfig:
 
 
 @dataclass(frozen=True)
+class LlamaConfig:
+    enabled: bool = True
+    base_url: str = "http://127.0.0.1:11434"
+    models: tuple[str, ...] = ("llama3.2:3b",)
+    default_model: str = "llama3.2:3b"
+    num_ctx: int = 0   # 0 = Ollama's model default
+
+
+@dataclass(frozen=True)
 class AgentConfig:
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
     recursion_limit: int = 25
@@ -92,6 +101,7 @@ class Config:
     database: DatabaseConfig
     claude: ClaudeConfig
     copilot: CopilotConfig
+    llama: LlamaConfig
     agent: AgentConfig
     mcp_servers: tuple[McpServerConfig, ...]
 
@@ -118,7 +128,7 @@ def load_config(explicit: str | os.PathLike | None = None) -> Config:
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f"{path}: invalid TOML: {e}") from e
 
-    known = {"server", "database", "claude", "copilot", "agent", "mcp"}
+    known = {"server", "database", "claude", "copilot", "llama", "agent", "mcp"}
     if unknown := set(raw) - known:
         raise ConfigError(f"{path}: unknown section(s): {', '.join(sorted(unknown))}")
 
@@ -128,10 +138,13 @@ def load_config(explicit: str | os.PathLike | None = None) -> Config:
 
     claude = _section(ClaudeConfig, _tuples(raw.get("claude", {}), "models"), "claude")
     copilot = _section(CopilotConfig, _tuples(raw.get("copilot", {}), "models"), "copilot")
+    llama = _section(LlamaConfig, _tuples(raw.get("llama", {}), "models"), "llama")
     if claude.enabled and claude.default_model not in claude.models:
         raise ConfigError("claude.default_model must be one of claude.models")
-    if not (claude.enabled or copilot.enabled):
-        raise ConfigError("Enable at least one of [claude] or [copilot]")
+    if llama.enabled and llama.default_model not in llama.models:
+        raise ConfigError("llama.default_model must be one of llama.models")
+    if not (claude.enabled or copilot.enabled or llama.enabled):
+        raise ConfigError("Enable at least one of [claude], [copilot] or [llama]")
 
     mcp = raw.get("mcp", {})
     if set(mcp) - {"servers"}:
@@ -149,6 +162,7 @@ def load_config(explicit: str | os.PathLike | None = None) -> Config:
         database=database,
         claude=claude,
         copilot=copilot,
+        llama=llama,
         agent=_section(AgentConfig, raw.get("agent", {}), "agent"),
         mcp_servers=tuple(servers),
     )
