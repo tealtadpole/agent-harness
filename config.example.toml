@@ -41,8 +41,12 @@ num_ctx = 0                           # 0 = Ollama's model default
 # system_prompt = "..."              # optional: replaces the built-in prompt
 recursion_limit = 25                 # max agent steps (model calls + tool calls) per message
 
-# MCP servers whose tools both providers can use. This one is the Confluence RAG
-# from https://github.com/tealtadpole/local-confluence-RAG (use absolute paths).
+# MCP servers whose tools both providers can use (use absolute paths). Pick ONE of the
+# two Confluence options below: agent-harness doesn't namespace MCP tool names by
+# server, and both expose search_confluence / get_confluence_page.
+
+# Option A: Confluence Server/Data Center only, from
+# https://github.com/tealtadpole/local-confluence-RAG (local RAG index, semantic search).
 [mcp.servers.confluence]
 command = "/home/you/repos/local-confluence-RAG/.venv/bin/confluence-rag"
 args = ["--config", "/home/you/repos/local-confluence-RAG/config.toml", "serve"]
@@ -51,9 +55,11 @@ env = { CONFLUENCE_PAT = "${CONFLUENCE_PAT}" }
 # Optional allow-list. Read-only tools only, so the agent can't trigger syncs:
 tools = ["search_confluence", "get_confluence_page"]
 
-# Jira Cloud, read-only, from https://github.com/tealtadpole/local-jira-mcp.
-[mcp.servers.jira]
-command = "/home/you/repos/local-jira-mcp/.venv/bin/jira-mcp"
-args = ["--config", "/home/you/repos/local-jira-mcp/config.toml", "serve"]
-env = { JIRA_API_TOKEN = "${JIRA_API_TOKEN}" }
-tools = ["search_jira", "get_jira_issue"]
+# Option B: Jira Cloud + Confluence Cloud (same site, same token), from
+# https://github.com/tealtadpole/local-atlassian-mcp. If you use this for Confluence,
+# remove or disable Option A above instead of running both.
+[mcp.servers.atlassian]
+command = "/home/you/repos/local-atlassian-mcp/.venv/bin/atlassian-mcp"
+args = ["--config", "/home/you/repos/local-atlassian-mcp/config.toml", "serve"]
+env = { ATLASSIAN_API_TOKEN = "${ATLASSIAN_API_TOKEN}" }
+tools = ["search_jira", "get_jira_issue", "search_confluence", "get_confluence_page"]
