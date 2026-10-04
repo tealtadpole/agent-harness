@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-harness"
+version = "0.1.0"
+description = "LangGraph agent harness with a React web UI, Postgres chat history, Claude and GitHub Copilot backends, and MCP tools (e.g. a Confluence RAG)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "langchain>=1.4,<2",
+    "langgraph>=1.2,<2",
+    "langchain-anthropic>=1.7,<2",
+    "langchain-mcp-adapters>=0.3,<0.4",
+    "langgraph-checkpoint-postgres>=3.1,<4",
+    "psycopg[binary,pool]>=3.2",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "github-copilot-sdk>=1.0,<2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "httpx>=0.27", "pgserver>=0.1"]
+
+[project.scripts]
+agent-harness = "agent_harness.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

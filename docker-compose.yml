@@ -1,0 +1,22 @@
+# PostgreSQL for the agent harness: chat sessions, messages and LangGraph checkpoints.
+# Start:  docker compose up -d      Stop: docker compose down      (data persists in the volume)
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: harness
+      POSTGRES_USER: harness
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-harness}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"   # localhost only
+    volumes:
+      - harness-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U harness -d harness"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  harness-pg:

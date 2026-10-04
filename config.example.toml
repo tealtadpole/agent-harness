@@ -1,0 +1,45 @@
+# agent-harness configuration. Copy to config.toml (gitignored).
+# Secrets come from environment variables, never from this file.
+
+[server]
+host = "127.0.0.1"          # there is no login: keep this on localhost
+port = 8000
+allowed_hosts = ["127.0.0.1", "localhost"]
+
+[database]
+# PostgreSQL URL. The DATABASE_URL environment variable overrides it.
+# Matches docker-compose.yml with POSTGRES_PASSWORD=change-me in .env.
+url = "postgresql://harness:change-me@127.0.0.1:5432/harness"
+
+[claude]
+enabled = true
+api_key_env = "ANTHROPIC_API_KEY"    # create a key at https://console.anthropic.com
+models = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-4-5"]
+default_model = "claude-opus-5-5"
+max_tokens = 16000
+effort = "medium"                    # low | medium | high | xhigh | max | "" (model default)
+refusal_fallback = true              # if a safety filter declines, retry on a fallback model
+base_url = ""                        # optional: an Anthropic-compatible gateway URL
+
+[copilot]
+enabled = true
+# Uses your GitHub CLI login (`gh auth login`) by default. To use a specific token,
+# put it in this environment variable instead.
+github_token_env = "COPILOT_GITHUB_TOKEN"
+models = []                          # empty = whatever your Copilot plan offers
+default_model = ""                   # empty = first available
+reasoning_effort = ""
+
+[agent]
+# system_prompt = "..."              # optional: replaces the built-in prompt
+recursion_limit = 25                 # max agent steps (model calls + tool calls) per message
+
+# MCP servers whose tools both providers can use. This one is the Confluence RAG
+# from https://github.com/tealtadpole/local-confluence-RAG (use absolute paths).
+[mcp.servers.confluence]
+command = "/home/you/repos/local-confluence-RAG/.venv/bin/confluence-rag"
+args = ["--config", "/home/you/repos/local-confluence-RAG/config.toml", "serve"]
+# ${VAR} is replaced from the harness's environment when the server starts.
+env = { CONFLUENCE_PAT = "${CONFLUENCE_PAT}" }
+# Optional allow-list. Read-only tools only, so the agent can't trigger syncs:
+tools = ["search_confluence", "get_confluence_page"]
