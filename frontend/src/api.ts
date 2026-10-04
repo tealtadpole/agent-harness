@@ -70,6 +70,65 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.status === 204 ? (undefined as T) : res.json();
 }
 
+export interface PlatformRepo {
+  platform: string;
+  repo_owner: string;
+  repo_name: string;
+  base_branch: string;
+  clone_url: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type WorkflowStatus =
+  | "pending" | "running" | "awaiting_approval" | "merging" | "advancing" | "completed" | "failed";
+export type Stage = "spec" | "plan" | "tasks" | "implement";
+export type StageStatus = "pending" | "running" | "pr_open" | "approved" | "merged" | "failed";
+
+export interface WorkflowStage {
+  id: number;
+  workflow_id: string;
+  stage: Stage;
+  branch: string;
+  pr_number: number | null;
+  pr_url: string | null;
+  status: StageStatus;
+  artifact_path: string | null;
+  error: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+}
+
+export interface Workflow {
+  id: string;
+  ticket_key: string;
+  ticket_summary: string;
+  platform: string;
+  repo_owner: string;
+  repo_name: string;
+  base_branch: string;
+  clone_url: string;
+  slug: string;
+  status: WorkflowStatus;
+  current_stage: Stage | "done";
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+  stages: WorkflowStage[];
+}
+
+export interface WorkflowEvent {
+  id: number;
+  workflow_id: string;
+  stage: Stage | null;
+  type:
+    | "stage_start" | "agent_text" | "tool_call" | "stage_pr_opened" | "stage_approved"
+    | "stage_merged" | "workflow_completed" | "workflow_failed" | "error";
+  payload: Record<string, unknown>;
+  created_at: string;
+}
+
 export const api = {
   providers: () => request<{ providers: ProviderStatus[]; mcp_servers: McpStatus[] }>("/api/providers"),
   sessions: () => request<Session[]>("/api/sessions"),
@@ -79,7 +138,26 @@ export const api = {
   renameSession: (id: string, title: string) =>
     request<Session>(`/api/sessions/${id}`, { method: "PATCH", body: JSON.stringify({ title }) }),
   deleteSession: (id: string) => request<void>(`/api/sessions/${id}`, { method: "DELETE" }),
+
+  platformRepos: () => request<PlatformRepo[]>("/api/platform-repos"),
+  upsertPlatformRepo: (repo: Omit<PlatformRepo, "created_at" | "updated_at">) =>
+    request<PlatformRepo>("/api/platform-repos", { method: "POST", body: JSON.stringify(repo) }),
+  deletePlatformRepo: (platform: string) =>
+    request<void>(`/api/platform-repos/${encodeURIComponent(platform)}`, { method: "DELETE" }),
+
+  workflows: () => request<Workflow[]>("/api/workflows"),
+  workflow: (id: string) => request<Workflow>(`/api/workflows/${id}`),
+  startWorkflow: (ticketKey: string) =>
+    request<Workflow>("/api/workflows", { method: "POST", body: JSON.stringify({ ticket_key: ticketKey }) }),
 };
+
+/** Stream a workflow's event log (past + live) using the browser's native EventSource, which
+ * auto-reconnects with Last-Event-ID -- the backend sends real `id:` lines for exactly this. */
+export function streamWorkflow(id: string, onEvent: (e: WorkflowEvent) => void): () => void {
+  const es = new EventSource(`/api/workflows/${id}/events`);
+  es.onmessage = (m) => onEvent(JSON.parse(m.data) as WorkflowEvent);
+  return () => es.close();
+}
 
 /** POST a message and call `onEvent` for each Server-Sent Event until the turn is done. */
 export async function sendMessage(

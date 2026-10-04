@@ -22,6 +22,11 @@ from agent_harness.providers.copilot import CopilotProvider
 
 HERE = Path(__file__).parent
 
+if sys.platform == "win32":
+    # psycopg's async mode cannot run under Windows' default ProactorEventLoop; tests use
+    # asyncio.run() directly (no pytest-asyncio), so set this once for the whole session.
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 
 # ---- Postgres ---------------------------------------------------------------
 
@@ -85,6 +90,81 @@ class FakeToolModel(BaseChatModel):
 def tool_call(name: str, args: dict, call_id: str = "call_1") -> AIMessage:
     return AIMessage(content="Let me check the wiki.",
                      tool_calls=[{"name": name, "args": args, "id": call_id}])
+
+
+class FakeJiraClient:
+    """Mimics JiraClient: canned JiraTicket per ticket key, records calls."""
+
+    def __init__(self, tickets: dict[str, Any]):
+        self.tickets = tickets   # ticket_key -> JiraTicket
+        self.calls: list[str] = []
+
+    async def get_ticket(self, ticket_key: str):
+        self.calls.append(ticket_key)
+        from agent_harness.jira_client import JiraError
+        try:
+            return self.tickets[ticket_key]
+        except KeyError:
+            raise JiraError(f"no such ticket: {ticket_key}") from None
+
+
+class FakeGithubClient:
+    """Mimics GithubClient: in-memory PRs, with approve()/close() test helpers to simulate what
+    a human does on the real GitHub UI.
+
+    `on_merge`, if given, is called as `on_merge(owner, repo, number, head, base)` from
+    `merge_pull_request` -- tests that run against a real local git remote (not just this
+    in-memory bookkeeping) use it to actually perform the merge there, the same way GitHub's
+    real merge API would on the real remote."""
+
+    def __init__(self, on_merge=None):
+        self._next_number = 1
+        self.prs: dict[int, dict] = {}   # number -> {state, merged, reviews: {login: state}}
+        self._heads: dict[int, tuple[str, str]] = {}   # number -> (head, base)
+        self.merged: list[int] = []
+        self.on_merge = on_merge
+
+    async def create_pull_request(self, owner, repo, head, base, title, body):
+        from agent_harness.github_client import PullRequest
+        number = self._next_number
+        self._next_number += 1
+        self.prs[number] = {"state": "open", "merged": False, "reviews": {}}
+        self._heads[number] = (head, base)
+        return PullRequest(number=number, html_url=f"https://github.com/{owner}/{repo}/pull/{number}",
+                           state="open", merged=False)
+
+    async def get_pull_request(self, owner, repo, number):
+        from agent_harness.github_client import GithubError, PullRequest
+        pr = self.prs.get(number)
+        if pr is None:
+            raise GithubError(f"no such PR: {number}")
+        return PullRequest(number=number, html_url=f"https://github.com/{owner}/{repo}/pull/{number}",
+                           state=pr["state"], merged=pr["merged"])
+
+    async def list_review_states(self, owner, repo, number):
+        return dict(self.prs[number]["reviews"])
+
+    def is_approved(self, review_states: dict[str, str]) -> bool:
+        states = review_states.values()
+        return "APPROVED" in states and "CHANGES_REQUESTED" not in states
+
+    async def merge_pull_request(self, owner, repo, number, merge_method):
+        self.prs[number]["state"] = "closed"
+        self.prs[number]["merged"] = True
+        self.merged.append(number)
+        if self.on_merge:
+            head, base = self._heads[number]
+            self.on_merge(owner, repo, number, head, base)
+
+    def approve(self, number: int, login: str = "reviewer") -> None:
+        self.prs[number]["reviews"][login] = "APPROVED"
+
+    def request_changes(self, number: int, login: str = "reviewer") -> None:
+        self.prs[number]["reviews"][login] = "CHANGES_REQUESTED"
+
+    def close_without_merge(self, number: int) -> None:
+        self.prs[number]["state"] = "closed"
+        self.prs[number]["merged"] = False
 
 
 class FakeCopilotRuntime:

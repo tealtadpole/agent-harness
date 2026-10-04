@@ -44,6 +44,7 @@ All three get tools from **MCP servers**, for example the Confluence RAG from
 | **Copilot** (optional) | A GitHub account **with a Copilot plan that allows SDK use**. Each prompt uses your Copilot premium-request quota. On first use the SDK downloads the Copilot runtime (~135 MB) into `~/.cache/github-copilot-sdk`. |
 | **Local LLM** (optional) | [Ollama](https://ollama.com) installed and running (`ollama serve`), with at least one model pulled (`ollama pull llama3.2:3b`). |
 | **MCP tools** (optional) | e.g. [local-confluence-RAG](https://github.com/tealtadpole/local-confluence-RAG) installed and synced. |
+| **JIRA + GitHub** (optional) | Only for the [workflow feature](#jira-ticket--pull-request-workflows): a JIRA Cloud API token and a GitHub PAT with `repo` scope (PR write + merge). |
 
 ## Installation
 
@@ -165,6 +166,64 @@ server would otherwise reload its embedding model on every search. Copilot start
 of each server. A server that fails to start is reported in `check` and the UI, and the rest
 keeps working.
 
+## JIRA ticket → pull request workflows
+
+A second, separate capability alongside chat: paste a JIRA ticket key into the **Workflows**
+tab, and the harness drives it through **spec → plan → tasks → implement**, following
+[GitHub spec-kit](https://github.com/github/spec-kit) artifact conventions. Each stage is its
+own branch and a real GitHub pull request; a human approves it on GitHub, and the harness
+merges it itself and immediately moves on to the next stage, using the now-updated base branch.
+
+```
+JIRA ticket (manual: paste the key in the UI)
+   │  reads summary/description + the "Platform" custom field
+   ▼
+platform_repos  (Platform value → repo, stored in this harness's own Postgres)
+   │
+   ▼
+spec   → branch + PR → you approve on GitHub → harness merges → │
+plan   → branch + PR → you approve on GitHub → harness merges → │  sequential,
+tasks  → branch + PR → you approve on GitHub → harness merges → │  one stage at a time
+implement (can run build/test commands) → branch + PR → you approve → merged → done
+```
+
+### Setup
+
+```toml
+[jira]
+enabled = true
+base_url = "https://yourco.atlassian.net"
+platform_field_id = "customfield_10050"   # find yours via GET /rest/api/3/field
+
+[github]
+enabled = true
+# token_env defaults to GITHUB_TOKEN; needs `repo` scope (PR write + merge rights)
+
+[workflow]
+enabled = true
+```
+
+```bash
+export JIRA_EMAIL='you@yourco.com'
+export JIRA_API_TOKEN='...'      # https://id.atlassian.com/manage-profile/security/api-tokens
+export GITHUB_TOKEN='ghp_...'    # PAT with `repo` scope
+```
+
+Then add at least one repo mapping in the **Platform Repos** tab (platform value, repo
+owner/name, base branch, clone URL) before starting a workflow — the harness looks up the
+ticket's Platform field there to decide which repo to target.
+
+### Scope and limitations (v1)
+
+- Manual trigger only: no JIRA webhook or polling.
+- One ticket, one repo, happy path: a failed stage stops the workflow for a human to look at;
+  there's no automatic retry or a "request changes" flow yet.
+- The `implement` stage's shell-command tool runs with the harness process's own privileges in
+  a plain sandbox checkout folder — the same "no OS-level sandboxing yet" limitation already
+  noted for MCP servers above, not something this feature solves.
+- Live stage output streams per-agent-step, not per-token (coarser than chat's streaming, but
+  every event is durably replayable if you reconnect mid-run).
+
 ## Database
 
 | Table | Contents |
@@ -172,6 +231,8 @@ keeps working.
 | `harness_sessions` | One row per chat: title, provider, model, timestamps. |
 | `harness_messages` | What the UI shows: user messages, assistant replies, tool calls (input + output, capped at 20 KB), errors. |
 | `checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations` | LangGraph's checkpointer: the full agent state per chat (`thread_id` = chat id), so the model remembers earlier turns. |
+| `platform_repos` | JIRA "Platform" field value → target repo, for the workflow feature. |
+| `workflows`, `workflow_stages`, `workflow_events` | One row per ticket workflow, per stage (branch, PR, status), and the replayable event log the UI streams. |
 
 ## Security notes
 
@@ -215,7 +276,15 @@ src/agent_harness/
   providers/copilot.py Copilot SDK runtime, lockdown, LangGraph node
   providers/llama.py   ChatOllama + create_agent (local LLM via Ollama)
   runner.py            one chat turn: stream events, save history (background task)
+  jira_client.py       JIRA Cloud REST client (ticket summary/description/Platform field)
+  github_client.py     GitHub REST client (create/approve-check/merge pull requests)
+  git_ops.py           local git: clone/fetch, branch, commit, push (via worker threads)
+  workflow_tools.py    sandboxed read/write/list/search + shell tools for stage agents
+  workflow_agents.py   per-stage prompts, create_agent() construction
+  workflow_db.py       Postgres: platform_repos, workflows, workflow_stages, workflow_events
+  workflow_runner.py   the spec → plan → tasks → implement state machine (background task)
   api.py               FastAPI routes, SSE, static UI
   cli.py               serve / check
-frontend/src/          React UI (App, Sidebar, MessageList, Composer)
+frontend/src/          React UI (App, Sidebar, MessageList, Composer,
+                       WorkflowList, WorkflowDetail, PlatformRepos)
 ```

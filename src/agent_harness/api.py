@@ -20,11 +20,16 @@ from pydantic import BaseModel, Field
 
 from .config import Config
 from .db import Database, make_pool
+from .github_client import GithubClient
+from .jira_client import JiraClient
 from .mcp_tools import McpTools
 from .providers.claude import ClaudeProvider
 from .providers.copilot import CopilotProvider, CopilotRuntime
 from .providers.llama import LlamaProvider
 from .runner import TurnBusy, TurnRunner
+from .workflow_agents import default_workflow_model_factory
+from .workflow_db import WorkflowDatabase
+from .workflow_runner import UnknownPlatform, WorkflowBusy, WorkflowRunner
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +42,10 @@ class AppState:
     providers: dict
     mcp: McpTools
     runner: TurnRunner
+    workflow_db: WorkflowDatabase
+    jira: JiraClient
+    github: GithubClient
+    workflow_runner: WorkflowRunner | None
 
 
 class NewSession(BaseModel):
@@ -53,7 +62,22 @@ class NewMessage(BaseModel):
     content: str = Field(min_length=1, max_length=100_000)
 
 
+class NewPlatformRepo(BaseModel):
+    platform: str = Field(min_length=1, max_length=100)
+    repo_owner: str = Field(min_length=1, max_length=200)
+    repo_name: str = Field(min_length=1, max_length=200)
+    base_branch: str = Field(default="main", min_length=1, max_length=200)
+    clone_url: str = Field(min_length=1, max_length=500)
+
+
+class NewWorkflow(BaseModel):
+    ticket_key: str = Field(min_length=1, max_length=50)
+
+
 ProvidersFactory = Callable[[Config, McpTools, AsyncPostgresSaver], dict]
+JiraFactory = Callable[[Config], JiraClient]
+GithubFactory = Callable[[Config], GithubClient]
+WorkflowModelFactory = Callable[[Config], Callable]
 
 
 def default_providers(cfg: Config, mcp: McpTools, checkpointer: AsyncPostgresSaver) -> dict:
@@ -69,25 +93,50 @@ def default_providers(cfg: Config, mcp: McpTools, checkpointer: AsyncPostgresSav
     return providers
 
 
-def create_app(cfg: Config, providers_factory: ProvidersFactory = default_providers) -> FastAPI:
+def default_jira_client(cfg: Config) -> JiraClient:
+    return JiraClient(cfg.jira)
+
+
+def default_github_client(cfg: Config) -> GithubClient:
+    return GithubClient(cfg.github)
+
+
+def create_app(cfg: Config, providers_factory: ProvidersFactory = default_providers,
+              jira_factory: JiraFactory = default_jira_client,
+              github_factory: GithubFactory = default_github_client,
+              workflow_model_factory: WorkflowModelFactory = default_workflow_model_factory) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         pool = make_pool(cfg.database.url)
         await pool.open(wait=True, timeout=15)
         db = Database(pool)
         await db.setup()
+        workflow_db = WorkflowDatabase(pool)
+        await workflow_db.setup()
         checkpointer = AsyncPostgresSaver(pool)
         await checkpointer.setup()
         mcp = McpTools(cfg.mcp_servers)
         await mcp.start()
         providers = providers_factory(cfg, mcp, checkpointer)
         runner = TurnRunner(db, providers, cfg.agent.recursion_limit)
-        app.state.harness = AppState(db=db, providers=providers, mcp=mcp, runner=runner)
+        jira = jira_factory(cfg)
+        github = github_factory(cfg)
+        workflow_runner = None
+        if cfg.workflow.enabled:
+            workflow_runner = WorkflowRunner(workflow_db, jira, github,
+                                             workflow_model_factory(cfg), checkpointer,
+                                             cfg.workflow, cfg.github)
+            await workflow_runner.resume_in_flight()
+        app.state.harness = AppState(db=db, providers=providers, mcp=mcp, runner=runner,
+                                     workflow_db=workflow_db, jira=jira, github=github,
+                                     workflow_runner=workflow_runner)
         app.state.checkpointer = checkpointer
         try:
             yield
         finally:
             await runner.wait_idle()
+            if workflow_runner:
+                await workflow_runner.wait_idle()
             for p in providers.values():
                 if runtime := getattr(p, "runtime", None):
                     await runtime.close()
@@ -181,6 +230,69 @@ def create_app(cfg: Config, providers_factory: ProvidersFactory = default_provid
                     yield f"data: {json.dumps(event, default=str)}\n\n"
             except TurnBusy as e:
                 yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+        return StreamingResponse(sse(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    @app.get("/api/platform-repos")
+    async def list_platform_repos():
+        return await state().workflow_db.list_platform_repos()
+
+    @app.post("/api/platform-repos", status_code=201)
+    async def upsert_platform_repo(body: NewPlatformRepo):
+        return await state().workflow_db.upsert_platform_repo(
+            body.platform, body.repo_owner, body.repo_name, body.base_branch, body.clone_url)
+
+    @app.delete("/api/platform-repos/{platform}", status_code=204)
+    async def delete_platform_repo(platform: str):
+        if not await state().workflow_db.delete_platform_repo(platform):
+            raise HTTPException(404, "No repo mapped for that platform")
+
+    @app.get("/api/workflows")
+    async def list_workflows():
+        workflows = await state().workflow_db.list_workflows()
+        for w in workflows:
+            w["stages"] = await state().workflow_db.list_stages(w["id"])
+        return workflows
+
+    @app.post("/api/workflows", status_code=201)
+    async def create_workflow(body: NewWorkflow):
+        runner = state().workflow_runner
+        if runner is None:
+            raise HTTPException(400, "[workflow] is disabled in config")
+        try:
+            return await runner.start_new(body.ticket_key)
+        except WorkflowBusy as e:
+            raise HTTPException(409, str(e)) from e
+        except UnknownPlatform as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.get("/api/workflows/{workflow_id}")
+    async def get_workflow(workflow_id: str):
+        workflow = await state().workflow_db.get_workflow(workflow_id)
+        if workflow is None:
+            raise HTTPException(404, "Workflow not found")
+        return {**workflow, "stages": await state().workflow_db.list_stages(workflow_id)}
+
+    @app.get("/api/workflows/{workflow_id}/events")
+    async def workflow_events(workflow_id: str, request: Request, since: int = 0):
+        if await state().workflow_db.get_workflow(workflow_id) is None:
+            raise HTTPException(404, "Workflow not found")
+        runner = state().workflow_runner
+        last_event_id = request.headers.get("last-event-id")
+        after = int(last_event_id) if last_event_id else since
+
+        async def sse():
+            for row in await state().workflow_db.list_events(workflow_id, after):
+                yield f"id: {row['id']}\ndata: {json.dumps(row, default=str)}\n\n"
+            if runner is None or not runner.is_running(workflow_id):
+                return
+            queue = runner.subscribe(workflow_id)
+            try:
+                while (event := await queue.get()) is not None:
+                    yield f"id: {event['id']}\ndata: {json.dumps(event, default=str)}\n\n"
+            finally:
+                runner.unsubscribe(workflow_id, queue)
 
         return StreamingResponse(sse(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

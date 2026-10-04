@@ -41,6 +41,32 @@ num_ctx = 0                           # 0 = Ollama's model default
 # system_prompt = "..."              # optional: replaces the built-in prompt
 recursion_limit = 25                 # max agent steps (model calls + tool calls) per message
 
+# JIRA ticket -> pull request pipeline (spec -> plan -> tasks -> implement).
+# Requires [claude], [jira] and [github] all enabled.
+[jira]
+enabled = false
+base_url = "https://yourco.atlassian.net"
+email_env = "JIRA_EMAIL"             # your Atlassian account email
+api_token_env = "JIRA_API_TOKEN"     # create at https://id.atlassian.com/manage-profile/security/api-tokens
+# Atlassian custom field id backing the "Platform" field on your tickets (varies per instance;
+# find it via GET /rest/api/3/field or by inspecting a ticket's JSON).
+platform_field_id = "customfield_10050"
+
+[github]
+enabled = false
+token_env = "GITHUB_TOKEN"           # PAT with `repo` scope (pull request write + merge rights)
+poll_interval_seconds = 30           # how often to check a stage's PR for an approving review
+merge_method = "squash"              # squash | merge | rebase
+
+[workflow]
+enabled = false
+model = ""                           # "" = claude.default_model
+workdir = ""                         # "" = ~/.cache/agent-harness/workflows
+git_user_name = "agent-harness"
+git_user_email = "agent-harness@localhost"
+recursion_limit = 50
+shell_timeout_seconds = 600          # the implement stage's build/test commands
+
 # MCP servers whose tools both providers can use (use absolute paths). Pick ONE of the
 # two Confluence options below: agent-harness doesn't namespace MCP tool names by
 # server, and both expose search_confluence / get_confluence_page.

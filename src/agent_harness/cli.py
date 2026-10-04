@@ -66,6 +66,21 @@ async def _check(cfg) -> int:
                 mark = "ok " if s.available else "-- "
                 models = f" models: {', '.join(s.models)}" if s.models else ""
                 print(f"{mark} {s.label}: {s.detail or 'ready'}{models}")
+            if cfg.jira.enabled:
+                from .jira_client import jira_status
+                ok_j, detail_j = await jira_status(cfg.jira)
+                print(f"{'ok ' if ok_j else '-- '} JIRA: {detail_j}")
+                ok &= ok_j
+            if cfg.github.enabled:
+                from .github_client import github_status
+                ok_g, detail_g = await github_status(cfg.github)
+                print(f"{'ok ' if ok_g else '-- '} GitHub: {detail_g}")
+                ok &= ok_g
+            if cfg.workflow.enabled:
+                repos = await state.workflow_db.list_platform_repos()
+                workflows = await state.workflow_db.list_workflows()
+                print(f"ok  Workflows: {len(repos)} platform repo mapping(s), "
+                     f"{len(workflows)} workflow(s) on record")
     except Exception as e:
         print(f"error: {type(e).__name__}: {e}", file=sys.stderr)
         return 1

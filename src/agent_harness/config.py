@@ -85,6 +85,47 @@ class AgentConfig:
 
 
 @dataclass(frozen=True)
+class JiraConfig:
+    enabled: bool = False
+    base_url: str = ""
+    email_env: str = "JIRA_EMAIL"
+    api_token_env: str = "JIRA_API_TOKEN"
+    # Atlassian custom field id for the "Platform" field; varies per JIRA instance.
+    platform_field_id: str = "customfield_10050"
+
+    @property
+    def email(self) -> str:
+        return os.environ.get(self.email_env, "")
+
+    @property
+    def api_token(self) -> str:
+        return os.environ.get(self.api_token_env, "")
+
+
+@dataclass(frozen=True)
+class GithubConfig:
+    enabled: bool = False
+    token_env: str = "GITHUB_TOKEN"
+    poll_interval_seconds: int = 30
+    merge_method: str = "squash"   # squash | merge | rebase
+
+    @property
+    def token(self) -> str:
+        return os.environ.get(self.token_env, "")
+
+
+@dataclass(frozen=True)
+class WorkflowConfig:
+    enabled: bool = False
+    model: str = ""              # "" -> claude.default_model
+    workdir: str = ""            # "" -> ~/.cache/agent-harness/workflows
+    git_user_name: str = "agent-harness"
+    git_user_email: str = "agent-harness@localhost"
+    recursion_limit: int = 50
+    shell_timeout_seconds: int = 600
+
+
+@dataclass(frozen=True)
 class McpServerConfig:
     name: str
     command: str
@@ -103,6 +144,9 @@ class Config:
     copilot: CopilotConfig
     llama: LlamaConfig
     agent: AgentConfig
+    jira: JiraConfig
+    github: GithubConfig
+    workflow: WorkflowConfig
     mcp_servers: tuple[McpServerConfig, ...]
 
 
@@ -128,7 +172,8 @@ def load_config(explicit: str | os.PathLike | None = None) -> Config:
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f"{path}: invalid TOML: {e}") from e
 
-    known = {"server", "database", "claude", "copilot", "llama", "agent", "mcp"}
+    known = {"server", "database", "claude", "copilot", "llama", "agent", "mcp",
+            "jira", "github", "workflow"}
     if unknown := set(raw) - known:
         raise ConfigError(f"{path}: unknown section(s): {', '.join(sorted(unknown))}")
 
@@ -145,6 +190,14 @@ def load_config(explicit: str | os.PathLike | None = None) -> Config:
         raise ConfigError("llama.default_model must be one of llama.models")
     if not (claude.enabled or copilot.enabled or llama.enabled):
         raise ConfigError("Enable at least one of [claude], [copilot] or [llama]")
+
+    jira = _section(JiraConfig, raw.get("jira", {}), "jira")
+    github = _section(GithubConfig, raw.get("github", {}), "github")
+    workflow = _section(WorkflowConfig, raw.get("workflow", {}), "workflow")
+    if workflow.enabled and not claude.enabled:
+        raise ConfigError("[workflow] requires [claude] enabled (stage agents run on Claude)")
+    if workflow.enabled and not (jira.enabled and github.enabled):
+        raise ConfigError("[workflow] requires both [jira] and [github] enabled")
 
     mcp = raw.get("mcp", {})
     if set(mcp) - {"servers"}:
@@ -164,6 +217,9 @@ def load_config(explicit: str | os.PathLike | None = None) -> Config:
         copilot=copilot,
         llama=llama,
         agent=_section(AgentConfig, raw.get("agent", {}), "agent"),
+        jira=jira,
+        github=github,
+        workflow=workflow,
         mcp_servers=tuple(servers),
     )
 

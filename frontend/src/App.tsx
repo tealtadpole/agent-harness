@@ -1,8 +1,32 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, sendMessage, type McpStatus, type Message, type ProviderStatus, type Session, type SessionDetail } from "./api";
+import {
+  api,
+  sendMessage,
+  type McpStatus,
+  type Message,
+  type PlatformRepo,
+  type ProviderStatus,
+  type Session,
+  type SessionDetail,
+  type Workflow,
+} from "./api";
 import Composer from "./components/Composer";
 import MessageList from "./components/MessageList";
+import PlatformRepos from "./components/PlatformRepos";
 import Sidebar from "./components/Sidebar";
+import WorkflowDetail from "./components/WorkflowDetail";
+import WorkflowList from "./components/WorkflowList";
+
+type View = "chat" | "workflows" | "workflow" | "platform-repos";
+
+function viewFromHash(): { view: View; workflowId: string | null } {
+  const hash = window.location.hash;
+  if (hash === "#/workflows") return { view: "workflows", workflowId: null };
+  if (hash === "#/platform-repos") return { view: "platform-repos", workflowId: null };
+  const m = hash.match(/^#\/w\/([0-9a-f-]{36})$/);
+  if (m) return { view: "workflow", workflowId: m[1] };
+  return { view: "chat", workflowId: null };
+}
 
 interface Live {
   messages: Message[]; // user message + tool calls of the turn in progress
@@ -35,6 +59,11 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [pick, setPick] = useState(loadPick);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [{ view, workflowId: activeWorkflowId }, setRoute] = useState(viewFromHash);
+  const [workflows, setWorkflows] = useState<Workflow[]>([]);
+  const [activeWorkflow, setActiveWorkflow] = useState<Workflow | null>(null);
+  const [platformRepos, setPlatformRepos] = useState<PlatformRepo[]>([]);
+  const [workflowError, setWorkflowError] = useState<string | null>(null);
 
   const refreshSessions = useCallback(() => api.sessions().then(setSessions).catch((e) => setError(String(e.message ?? e))), []);
 
@@ -54,10 +83,38 @@ export default function App() {
       })
       .catch((e) => setError(`Cannot reach the server: ${e.message ?? e}`));
     refreshSessions();
-    const onHash = () => setActiveId(sessionFromHash());
+    const onHash = () => {
+      setActiveId(sessionFromHash());
+      setRoute(viewFromHash());
+    };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, [refreshSessions]);
+
+  useEffect(() => {
+    if (view === "workflows") api.workflows().then(setWorkflows).catch((e) => setWorkflowError(String(e.message ?? e)));
+  }, [view]);
+
+  useEffect(() => {
+    if (view === "platform-repos") api.platformRepos().then(setPlatformRepos).catch((e) => setWorkflowError(String(e.message ?? e)));
+  }, [view]);
+
+  useEffect(() => {
+    if (view === "workflow" && activeWorkflowId) {
+      api.workflow(activeWorkflowId).then(setActiveWorkflow).catch((e) => setWorkflowError((e as Error).message));
+    }
+  }, [view, activeWorkflowId]);
+
+  // Stage/PR status isn't pushed live, only the event log is: poll the workflow record while
+  // it's still running so stage cards (status, PR links) stay current.
+  useEffect(() => {
+    if (view !== "workflow" || !activeWorkflowId) return;
+    if (activeWorkflow && (activeWorkflow.status === "completed" || activeWorkflow.status === "failed")) return;
+    const t = setInterval(() => {
+      api.workflow(activeWorkflowId).then(setActiveWorkflow).catch(() => {});
+    }, 3000);
+    return () => clearInterval(t);
+  }, [view, activeWorkflowId, activeWorkflow?.status]);
 
   useEffect(() => {
     try {
@@ -179,6 +236,55 @@ export default function App() {
     }
   };
 
+  const goToChat = () => {
+    window.location.hash = activeId ? `/s/${activeId}` : "";
+    setRoute({ view: "chat", workflowId: null });
+  };
+  const goToWorkflows = () => {
+    window.location.hash = "#/workflows";
+    setRoute({ view: "workflows", workflowId: null });
+    setWorkflowError(null);
+  };
+  const goToPlatformRepos = () => {
+    window.location.hash = "#/platform-repos";
+    setRoute({ view: "platform-repos", workflowId: null });
+    setWorkflowError(null);
+  };
+  const openWorkflow = (id: string) => {
+    window.location.hash = `#/w/${id}`;
+    setRoute({ view: "workflow", workflowId: id });
+  };
+
+  const startWorkflow = async (ticketKey: string) => {
+    setWorkflowError(null);
+    try {
+      const w = await api.startWorkflow(ticketKey);
+      setWorkflows((list) => [w, ...list]);
+      openWorkflow(w.id);
+    } catch (e) {
+      setWorkflowError((e as Error).message);
+    }
+  };
+
+  const upsertPlatformRepo = async (repo: Omit<PlatformRepo, "created_at" | "updated_at">) => {
+    setWorkflowError(null);
+    try {
+      const saved = await api.upsertPlatformRepo(repo);
+      setPlatformRepos((list) => [saved, ...list.filter((r) => r.platform !== saved.platform)]);
+    } catch (e) {
+      setWorkflowError((e as Error).message);
+    }
+  };
+
+  const deletePlatformRepo = async (platform: string) => {
+    try {
+      await api.deletePlatformRepo(platform);
+      setPlatformRepos((list) => list.filter((r) => r.platform !== platform));
+    } catch (e) {
+      setWorkflowError((e as Error).message);
+    }
+  };
+
   const messages = useMemo(() => {
     const saved = detail?.messages ?? [];
     const current = [...live.messages];
@@ -192,69 +298,100 @@ export default function App() {
 
   return (
     <div className={`app ${sidebarOpen ? "sidebar-open" : ""}`}>
-      <Sidebar
-        providers={providers}
-        mcp={mcp}
-        sessions={sessions}
-        activeId={activeId}
-        pick={pick}
-        onPick={setPick}
-        onSelect={select}
-        onNew={newChat}
-        onRename={rename}
-        onDelete={remove}
-        onClose={() => setSidebarOpen(false)}
-      />
+      {view === "chat" && (
+        <Sidebar
+          providers={providers}
+          mcp={mcp}
+          sessions={sessions}
+          activeId={activeId}
+          pick={pick}
+          onPick={setPick}
+          onSelect={select}
+          onNew={newChat}
+          onRename={rename}
+          onDelete={remove}
+          onClose={() => setSidebarOpen(false)}
+        />
+      )}
       <main className="main">
         <header className="topbar">
-          <button className="icon-btn menu-btn" onClick={() => setSidebarOpen(true)} aria-label="Open chats">
-            ☰
-          </button>
-          <div className="topbar-title">
-            <h1>{detail?.title ?? "New chat"}</h1>
-            <span className="badge">
-              {provider?.label ?? detail?.provider ?? pick.provider} · {detail?.model ?? pick.model}
-            </span>
-          </div>
+          {view === "chat" && (
+            <button className="icon-btn menu-btn" onClick={() => setSidebarOpen(true)} aria-label="Open chats">
+              ☰
+            </button>
+          )}
+          <nav style={{ display: "flex", gap: 4 }}>
+            <button className="link-btn" onClick={goToChat} style={{ fontWeight: view === "chat" ? 700 : 400 }}>
+              Chat
+            </button>
+            <button className="link-btn" onClick={goToWorkflows} style={{ fontWeight: view === "workflows" || view === "workflow" ? 700 : 400 }}>
+              Workflows
+            </button>
+            <button className="link-btn" onClick={goToPlatformRepos} style={{ fontWeight: view === "platform-repos" ? 700 : 400 }}>
+              Platform Repos
+            </button>
+          </nav>
+          {view === "chat" && (
+            <div className="topbar-title">
+              <h1>{detail?.title ?? "New chat"}</h1>
+              <span className="badge">
+                {provider?.label ?? detail?.provider ?? pick.provider} · {detail?.model ?? pick.model}
+              </span>
+            </div>
+          )}
         </header>
 
-        {(error || (!detail && (unavailable.length > 0 || brokenMcp.length > 0))) && (
-          <div className="banners">
-            {error && (
-              <div className="banner banner-error">
-                {error}
-                <button className="link-btn" onClick={() => setError(null)}>
-                  Dismiss
-                </button>
+        {view === "chat" && (
+          <>
+            {(error || (!detail && (unavailable.length > 0 || brokenMcp.length > 0))) && (
+              <div className="banners">
+                {error && (
+                  <div className="banner banner-error">
+                    {error}
+                    <button className="link-btn" onClick={() => setError(null)}>
+                      Dismiss
+                    </button>
+                  </div>
+                )}
+                {!detail &&
+                  unavailable.map((p) => (
+                    <div key={p.name} className="banner">
+                      <strong>{p.label}:</strong> {p.detail || "not available"}
+                    </div>
+                  ))}
+                {!detail &&
+                  brokenMcp.map((m) => (
+                    <div key={m.name} className="banner banner-error">
+                      <strong>MCP server “{m.name}” failed:</strong> {m.error}
+                    </div>
+                  ))}
               </div>
             )}
-            {!detail &&
-              unavailable.map((p) => (
-                <div key={p.name} className="banner">
-                  <strong>{p.label}:</strong> {p.detail || "not available"}
-                </div>
-              ))}
-            {!detail &&
-              brokenMcp.map((m) => (
-                <div key={m.name} className="banner banner-error">
-                  <strong>MCP server “{m.name}” failed:</strong> {m.error}
-                </div>
-              ))}
-          </div>
+
+            <MessageList messages={messages} streaming={streaming || !!detail?.running} empty={!detail} mcp={mcp} />
+            <Composer
+              disabled={streaming || !!detail?.running || (!detail && !provider?.available)}
+              placeholder={
+                detail?.running && !streaming
+                  ? "A reply is still being generated…"
+                  : !detail && !provider?.available
+                    ? "Pick an available model in the sidebar to start"
+                    : "Ask anything… (Enter to send, Shift+Enter for a new line)"
+              }
+              onSend={send}
+            />
+          </>
         )}
 
-        <MessageList messages={messages} streaming={streaming || !!detail?.running} empty={!detail} mcp={mcp} />
-        <Composer
-          disabled={streaming || !!detail?.running || (!detail && !provider?.available)}
-          placeholder={
-            detail?.running && !streaming
-              ? "A reply is still being generated…"
-              : !detail && !provider?.available
-                ? "Pick an available model in the sidebar to start"
-                : "Ask anything… (Enter to send, Shift+Enter for a new line)"
-          }
-          onSend={send}
-        />
+        {view === "workflows" && (
+          <WorkflowList workflows={workflows} onStart={startWorkflow} onSelect={openWorkflow} error={workflowError} />
+        )}
+
+        {view === "workflow" && (activeWorkflow ? <WorkflowDetail workflow={activeWorkflow} /> : <div className="messages" />)}
+
+        {view === "platform-repos" && (
+          <PlatformRepos repos={platformRepos} onUpsert={upsertPlatformRepo} onDelete={deletePlatformRepo} error={workflowError} />
+        )}
       </main>
     </div>
   );
