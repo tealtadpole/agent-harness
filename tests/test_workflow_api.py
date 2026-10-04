@@ -29,6 +29,7 @@ from agent_harness.config import (
     DatabaseConfig,
     GithubConfig,
     JiraConfig,
+    LlamaConfig,
     ServerConfig,
     WorkflowConfig,
 )
@@ -100,6 +101,7 @@ def _workflow_app(database_url, tmp_path, jira, github):
         database=DatabaseConfig(url=database_url),
         claude=ClaudeConfig(models=("claude-test",), default_model="claude-test"),
         copilot=CopilotConfig(enabled=False),
+        llama=LlamaConfig(enabled=False),
         agent=AgentConfig(),
         jira=JiraConfig(enabled=True),
         github=GithubConfig(enabled=True, poll_interval_seconds=0.05),
