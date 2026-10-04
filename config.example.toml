@@ -50,3 +50,10 @@ args = ["--config", "/home/you/repos/local-confluence-RAG/config.toml", "serve"]
 env = { CONFLUENCE_PAT = "${CONFLUENCE_PAT}" }
 # Optional allow-list. Read-only tools only, so the agent can't trigger syncs:
 tools = ["search_confluence", "get_confluence_page"]
+
+# Jira Cloud, read-only, from https://github.com/tealtadpole/local-jira-mcp.
+[mcp.servers.jira]
+command = "/home/you/repos/local-jira-mcp/.venv/bin/jira-mcp"
+args = ["--config", "/home/you/repos/local-jira-mcp/config.toml", "serve"]
+env = { JIRA_API_TOKEN = "${JIRA_API_TOKEN}" }
+tools = ["search_jira", "get_jira_issue"]
